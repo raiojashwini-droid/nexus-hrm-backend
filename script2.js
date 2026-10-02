@@ -1,1 +1,0 @@
-const db = require('./config/db'); async function run() { try { const [subs] = await db.execute('SELECT * FROM subscriptions WHERE company_id=2 order by id desc'); console.log(subs); } finally { process.exit(0); } } run();
