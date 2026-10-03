@@ -69,6 +69,7 @@ exports.getAttendance = async (req, res) => {
             let earning = 0;
             if (row.salary_type === 'hourly') earning = hours * rate;
             else if (row.salary_type === 'monthly') earning = hours > 0 ? (rate / 30) : 0;
+            else if (row.salary_type === 'fortnightly') earning = hours > 0 ? (rate / 14) : 0;
             else if (row.salary_type === 'daily') earning = hours > 0 ? rate : 0;
             const uif = earning * 0.01;
             const branch = row.branch_name || null;
@@ -443,6 +444,8 @@ exports.getDashboardStats = async (req, res) => {
                     totalPayout += (parseFloat(att.hours) || 0) * rate;
                 } else if (emp.salary_type === 'monthly') {
                     totalPayout += (parseInt(att.days) || 0) * (rate / 30);
+                } else if (emp.salary_type === 'fortnightly') {
+                    totalPayout += (parseInt(att.days) || 0) * (rate / 14);
                 } else {
                     totalPayout += (parseInt(att.days) || 0) * rate;
                 }

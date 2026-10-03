@@ -107,6 +107,15 @@ exports.generatePayroll = async (req, res) => {
                 // For daily, maybe OT is still hourly? Let's add it on top if any.
                 const otMultiplier = parseFloat(settings.ot_multiplier) || 1.5;
                 baseEarnings += (overtimeHours * (rate / 9) * otMultiplier);
+            } else if (employee.salary_type === 'fortnightly') {
+                baseEarnings = (presentDays / 14) * rate;
+                const otMultiplier = parseFloat(settings.ot_multiplier) || 1.5;
+                baseEarnings += (overtimeHours * ((rate / 14) / 9) * otMultiplier);
+            } else {
+                // Monthly
+                baseEarnings = (presentDays / 30) * rate;
+                const otMultiplier = parseFloat(settings.ot_multiplier) || 1.5;
+                baseEarnings += (overtimeHours * ((rate / 30) / 9) * otMultiplier);
             }
 
             // Deductions logic

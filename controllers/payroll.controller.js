@@ -140,6 +140,12 @@ exports.generatePayroll = async (req, res) => {
                     WHERE employee_id = ? AND date BETWEEN ? AND ? AND status IN ('present', 'late')
                 `, [emp.id, startDate, endDate]);
                 baseSalary = (dayRows[0].days || 0) * (salaryRate / 30);
+            } else if (emp.salary_type === 'fortnightly') {
+                const [dayRows] = await db.execute(`
+                    SELECT COUNT(*) as days FROM attendance 
+                    WHERE employee_id = ? AND date BETWEEN ? AND ? AND status IN ('present', 'late')
+                `, [emp.id, startDate, endDate]);
+                baseSalary = (dayRows[0].days || 0) * (salaryRate / 14);
             } else {
                 // Daily
                 const [dayRows] = await db.execute(`
@@ -360,6 +366,18 @@ exports.getLiveAccrual = async (req, res) => {
 
         if (emp.salary_type === 'hourly') {
             liveEarnings = totalHours * salaryRate;
+        } else if (emp.salary_type === 'monthly') {
+            const [dayRows] = await db.execute(`
+                SELECT COUNT(*) as days FROM attendance 
+                WHERE employee_id = ? AND date BETWEEN ? AND ? AND status IN ('present', 'late')
+            `, [employeeId, startDate, endDate]);
+            liveEarnings = (dayRows[0].days || 0) * (salaryRate / 30);
+        } else if (emp.salary_type === 'fortnightly') {
+            const [dayRows] = await db.execute(`
+                SELECT COUNT(*) as days FROM attendance 
+                WHERE employee_id = ? AND date BETWEEN ? AND ? AND status IN ('present', 'late')
+            `, [employeeId, startDate, endDate]);
+            liveEarnings = (dayRows[0].days || 0) * (salaryRate / 14);
         } else {
             const [dayRows] = await db.execute(`
                 SELECT COUNT(*) as days FROM attendance 

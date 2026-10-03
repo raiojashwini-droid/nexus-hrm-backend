@@ -87,7 +87,11 @@ async function getEmployeeSalary(user) {
     const totalHours = parseFloat(attHours[0].th || 0);
     const workDays = parseInt(attHours[0].work_days || 0);
 
-    let liveEarnings = emp.salary_type === 'hourly' ? totalHours * rate : workDays * rate;
+    let liveEarnings = 0;
+    if (emp.salary_type === 'hourly') liveEarnings = totalHours * rate;
+    else if (emp.salary_type === 'monthly') liveEarnings = workDays * (rate / 30);
+    else if (emp.salary_type === 'fortnightly') liveEarnings = workDays * (rate / 14);
+    else liveEarnings = workDays * rate;
     const uif = liveEarnings * 0.01;
     const advance = parseFloat(emp.advance_balance || 0);
     const net = Math.max(0, liveEarnings - uif - advance);

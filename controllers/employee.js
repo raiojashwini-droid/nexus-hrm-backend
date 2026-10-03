@@ -169,7 +169,7 @@ exports.addEmployee = async (req, res) => {
         // Ensure role is valid — normalize if it's an admin variant
         const dbRole = isAdmin(role) ? role.toLowerCase() : 'employee';
         const dbShift = ['Morning Shift', 'Evening Shift', 'Night Shift'].includes(shift) ? shift : 'Morning Shift';
-        const dbSalaryType = ['hourly', 'daily', 'monthly'].includes(salary_type) ? salary_type : 'hourly';
+        const dbSalaryType = ['hourly', 'daily', 'monthly', 'fortnightly'].includes(salary_type) ? salary_type : 'hourly';
 
         const isCpfApplicable = (req.body.cpf_applicable === 'false' || req.body.cpf_applicable === false || req.body.cpf_applicable === 0 || req.body.cpf_applicable === '0') ? 0 : 1;
 
@@ -380,7 +380,7 @@ exports.updateEmployee = async (req, res) => {
                     if (!validStatus.includes(val)) val = 'active';
                 }
                 if (field === 'salary_type') {
-                    const validTypes = ['hourly', 'daily', 'monthly'];
+                    const validTypes = ['hourly', 'daily', 'monthly', 'fortnightly'];
                     if (!validTypes.includes(val)) val = 'hourly';
                 }
 
@@ -953,6 +953,7 @@ exports.bulkUploadEmployees = async (req, res) => {
             let dbSalaryType = 'monthly';
             const lowerSalType = salaryType.toLowerCase();
             if (lowerSalType.includes('hour')) dbSalaryType = 'hourly';
+            else if (lowerSalType.includes('fortnight')) dbSalaryType = 'fortnightly';
             else if (lowerSalType.includes('day') || lowerSalType.includes('daily')) dbSalaryType = 'daily';
 
             // Custom ID / Machine ID resolution
