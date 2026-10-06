@@ -188,12 +188,15 @@ router.get('/payroll/email-progress-stream', auth, adminOnly, emailQueueControll
 router.get('/payroll/email-logs', auth, adminOnly, emailQueueController.getEmailLogs);
 router.post('/payroll/retry-emails', auth, adminOnly, emailQueueController.retryEmails);
 
-// Kiosk
+// Standalone Kiosk Routes
 const kioskController = require('../controllers/kiosk.controller');
+router.post('/kiosk/login', kioskController.kioskLogin);
+router.post('/kiosk/exit', auth, kioskController.kioskExit);
+router.post('/kiosk/verify-employee', auth, kioskController.verifyEmployee);
 router.get('/kiosk/settings', auth, kioskController.getKioskSettings);
-router.put('/kiosk/settings', auth, adminOnly, kioskController.updateKioskSettings);
+router.put('/kiosk/settings', auth, kioskController.updateKioskSettings);
 
-// Kiosk Punch — secured with API key or user JWT token
+// Kiosk Punch — secured with API key or user JWT token (supports kiosk role)
 router.post('/kiosk/punch', (req, res, next) => {
     const apiKey = req.headers['x-kiosk-api-key'] || req.body.apiKey;
     const validKey = process.env.KIOSK_API_KEY || 'kiosk_nexus_2026_secure_key';
@@ -209,7 +212,7 @@ router.post('/kiosk/punch', (req, res, next) => {
         const jwt = require('jsonwebtoken');
         try {
             const token = authHeader.split(' ')[1];
-            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'biotrack_secret_key_2026_pro');
             req.user = decoded;
             return next();
         } catch (jwtErr) {}

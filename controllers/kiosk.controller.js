@@ -1,5 +1,7 @@
 const db = require('../config/db');
 const moment = require('moment-timezone');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const { getCompanyTimezone, determinePunchStatus } = require('../utils/attendanceHelper');
 
 const euclideanDistance = (desc1, desc2) => {
@@ -77,10 +79,13 @@ exports.kioskPunch = async (req, res) => {
         }
 
         // Validate employee exists
-        const [employees] = await db.execute(
-            'SELECT * FROM employees WHERE custom_id = ? OR machine_id = ? OR id = ?',
-            [employeeId, employeeId, employeeId]
-        );
+        let empSql = 'SELECT * FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
+        let empParams = [employeeId, employeeId, employeeId];
+        if (req.user?.company_id && req.user.role !== 'MasterAdmin') {
+            empSql += ' AND company_id = ?';
+            empParams.push(req.user.company_id);
+        }
+        const [employees] = await db.execute(empSql, empParams);
 
         if (employees.length === 0) {
             return res.status(404).json({ message: 'Employee not found' });
@@ -266,3 +271,211 @@ exports.kioskFacePunch = async (req, res) => {
         res.status(500).json({ message: 'Server error processing face punch', error: err.message });
     }
 };
+
+// --- STANDALONE KIOSK CONTROLLERS ---
+
+/**
+ * Standalone Kiosk Device Login / Activation
+ * Authenticates company once and returns a long-lived restricted Kiosk token (role: 'kiosk')
+ */
+exports.kioskLogin = async (req, res) => {
+    try {
+        const { email, password, deviceName } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ message: 'Company email and password are required' });
+        }
+
+        // 1. Find user (admin or company owner)
+        const [users] = await db.execute(
+            'SELECT id, name, email, password, role, company_id FROM users WHERE email = ?',
+            [email.trim().toLowerCase()]
+        );
+
+        if (users.length === 0) {
+            return res.status(401).json({ message: 'Invalid company credentials' });
+        }
+
+        const user = users[0];
+
+        // 2. Verify password
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Invalid company credentials' });
+        }
+
+        if (!user.company_id) {
+            return res.status(400).json({ message: 'No company associated with this account' });
+        }
+
+        // 3. Verify company exists and is active
+        const [companies] = await db.execute(
+            'SELECT id, company_name, status FROM companies WHERE id = ?',
+            [user.company_id]
+        );
+
+        if (companies.length === 0) {
+            return res.status(404).json({ message: 'Company not found' });
+        }
+
+        const company = companies[0];
+        if (company.status && company.status.toLowerCase() !== 'active') {
+            return res.status(403).json({ message: 'Company account is inactive or suspended' });
+        }
+
+        // 4. Issue dedicated long-lived Kiosk JWT (role: 'kiosk', 365d)
+        const token = jwt.sign(
+            {
+                id: `kiosk-${company.id}`,
+                role: 'kiosk',
+                company_id: company.id,
+                company_name: company.company_name,
+                device_name: deviceName || 'Reception Tablet'
+            },
+            process.env.JWT_SECRET || 'biotrack_secret_key_2026_pro',
+            { expiresIn: '365d' }
+        );
+
+        // 5. Fetch kiosk settings
+        const [settings] = await db.execute(
+            'SELECT * FROM kiosk_settings WHERE company_id = ?',
+            [company.id]
+        );
+
+        const kioskConfig = settings.length > 0 ? settings[0] : {
+            kiosk_name: deviceName || 'Reception Tablet A',
+            face_recognition: 1,
+            status: 'Active'
+        };
+
+        // Fetch company active geofences / branches if any
+        const [branches] = await db.execute(
+            'SELECT id, name, address FROM geofences WHERE company_id = ? AND status = "Active"',
+            [company.id]
+        );
+
+        res.json({
+            success: true,
+            message: 'Kiosk Terminal activated successfully',
+            token,
+            company: {
+                id: company.id,
+                name: company.company_name
+            },
+            settings: kioskConfig,
+            branches
+        });
+    } catch (err) {
+        console.error('Error activating kiosk:', err);
+        res.status(500).json({ message: 'Server error activating kiosk', error: err.message });
+    }
+};
+
+/**
+ * Verify single employee ID for PIN punch (Lightweight, zero data leakage)
+ */
+exports.verifyEmployee = async (req, res) => {
+    try {
+        const { employeeId } = req.body;
+        const company_id = req.user?.company_id;
+
+        if (!employeeId) {
+            return res.status(400).json({ message: 'Employee ID is required' });
+        }
+
+        // Query employee belonging to this company
+        let query = 'SELECT id, custom_id, machine_id, name, department, photo, status FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
+        let params = [employeeId.trim(), employeeId.trim(), employeeId.trim()];
+
+        if (company_id && req.user.role !== 'MasterAdmin') {
+            query += ' AND company_id = ?';
+            params.push(company_id);
+        }
+
+        const [employees] = await db.execute(query, params);
+
+        if (employees.length === 0) {
+            return res.status(404).json({ message: 'Employee ID not found' });
+        }
+
+        const emp = employees[0];
+        if (emp.status !== 'active') {
+            return res.status(400).json({ message: 'Employee profile is currently inactive' });
+        }
+
+        // Check today's attendance status
+        const todayDate = new Date().toISOString().split('T')[0];
+        const [attendance] = await db.execute(
+            'SELECT id, in_time, out_time FROM attendance WHERE employee_id = ? AND date = ?',
+            [emp.id, todayDate]
+        );
+
+        let punchStatus = 'needs_checkin';
+        if (attendance.length > 0 && attendance[0].in_time && !attendance[0].out_time) {
+            punchStatus = 'needs_checkout';
+        } else if (attendance.length > 0 && attendance[0].in_time && attendance[0].out_time) {
+            punchStatus = 'done';
+        }
+
+        res.json({
+            success: true,
+            employee: {
+                id: emp.id,
+                custom_id: emp.custom_id,
+                name: emp.name,
+                department: emp.department || 'General',
+                photo: emp.photo
+            },
+            punchStatus
+        });
+    } catch (err) {
+        console.error('Error verifying employee on kiosk:', err);
+        res.status(500).json({ message: 'Server error verifying employee', error: err.message });
+    }
+};
+
+/**
+ * Admin Exit/Deactivate Kiosk Screen (Requires admin password to exit/reconfigure)
+ */
+exports.kioskExit = async (req, res) => {
+    try {
+        const { password, action } = req.body;
+        const company_id = req.user?.company_id;
+
+        if (!password) {
+            return res.status(400).json({ message: 'Admin password is required to exit Kiosk' });
+        }
+
+        // Find admin users for this company
+        const [admins] = await db.execute(
+            'SELECT password FROM users WHERE company_id = ? AND role IN ("admin", "masteradmin", "superadmin")',
+            [company_id]
+        );
+
+        if (admins.length === 0) {
+            return res.status(404).json({ message: 'Admin account not found for this company' });
+        }
+
+        let isMatch = false;
+        for (const admin of admins) {
+            if (await bcrypt.compare(password, admin.password)) {
+                isMatch = true;
+                break;
+            }
+        }
+
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Incorrect admin password' });
+        }
+
+        if (action === 'verify') {
+            return res.json({ success: true, message: 'Admin verified successfully' });
+        }
+
+        res.json({ success: true, message: 'Kiosk deactivated successfully' });
+    } catch (err) {
+        console.error('Error during kiosk exit:', err);
+        res.status(500).json({ message: 'Server error during kiosk exit', error: err.message });
+    }
+};
+
