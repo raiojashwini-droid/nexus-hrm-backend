@@ -134,7 +134,7 @@ exports.kioskPunch = async (req, res) => {
         const company_id = req.user?.company_id || req.body.companyId;
 
         if (!employeeId || !type) {
-             return res.status(400).json({ message: 'Employee ID and punch type are required' });
+            return res.status(400).json({ message: 'Employee ID and punch type are required' });
         }
 
         // Validate employee exists (prioritizing exact primary key id if provided, else custom_id/machine_id)
@@ -181,9 +181,9 @@ exports.kioskPunch = async (req, res) => {
 
         let uiStatus = 'On Time';
         const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
-        const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
-            String(attendance[0].out_time).trim() !== '' && 
-            String(attendance[0].out_time).trim() !== '00:00:00' && 
+        const hasOutTime = attendance.length > 0 && attendance[0].out_time &&
+            String(attendance[0].out_time).trim() !== '' &&
+            String(attendance[0].out_time).trim() !== '00:00:00' &&
             String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
 
         if (type === 'Punch In') {
@@ -207,11 +207,11 @@ exports.kioskPunch = async (req, res) => {
             }
         } else if (type === 'Punch Out') {
             if (!hasInTime) {
-                 return res.status(400).json({ message: 'Cannot punch out without punching in first' });
+                return res.status(400).json({ message: 'Cannot punch out without punching in first' });
             }
-            
+
             if (hasOutTime) {
-                 return res.status(400).json({ message: 'Already punched out today' });
+                return res.status(400).json({ message: 'Already punched out today' });
             }
 
             const inTimeMoment = moment.tz(attendance[0].in_time, 'YYYY-MM-DD HH:mm:ss', tz);
@@ -229,20 +229,20 @@ exports.kioskPunch = async (req, res) => {
             return res.status(400).json({ message: 'Invalid punch type' });
         }
 
-        res.json({ 
+        res.json({
             success: true,
             message: `${type} successful for ${employee.name}`,
-            employee: { 
+            employee: {
                 id: employee.id,
-                name: employee.name, 
-                custom_id: employee.custom_id, 
-                department: employee.department || 'N/A' 
+                name: employee.name,
+                custom_id: employee.custom_id,
+                department: employee.department || 'N/A'
             },
-            log: { 
-                action: type, 
-                time: moment().tz(tz).format('hh:mm A'), 
-                status: uiStatus, 
-                device: 'Kiosk Mode' 
+            log: {
+                action: type,
+                time: moment().tz(tz).format('hh:mm A'),
+                status: uiStatus,
+                device: 'Kiosk Mode'
             }
         });
 
@@ -284,7 +284,7 @@ exports.kioskFacePunch = async (req, res) => {
         if (!descriptor || !Array.isArray(descriptor)) {
             return res.status(400).json({ message: 'Invalid face descriptor.' });
         }
-        
+
         if (!livenessPassed || livenessScore < 0.80) {
             return res.status(403).json({ message: 'Anti-spoofing triggered. Real face not detected.' });
         }
@@ -339,9 +339,9 @@ exports.kioskFacePunch = async (req, res) => {
             let uiStatus = 'On Time';
 
             const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
-            const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
-                String(attendance[0].out_time).trim() !== '' && 
-                String(attendance[0].out_time).trim() !== '00:00:00' && 
+            const hasOutTime = attendance.length > 0 && attendance[0].out_time &&
+                String(attendance[0].out_time).trim() !== '' &&
+                String(attendance[0].out_time).trim() !== '00:00:00' &&
                 String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
 
             if (!hasInTime) {
@@ -362,11 +362,11 @@ exports.kioskFacePunch = async (req, res) => {
             } else if (!hasOutTime) {
                 // Punch Out
                 action = 'Punch Out';
-                
-                const inTimeStr = attendance[0].in_time; 
+
+                const inTimeStr = attendance[0].in_time;
                 const inTime = moment.tz(inTimeStr, "YYYY-MM-DD HH:mm:ss", tz);
                 const outTime = moment.tz(nowFormatted, "YYYY-MM-DD HH:mm:ss", tz);
-                
+
                 const diffMs = outTime.diff(inTime);
                 const totalHours = (diffMs / (1000 * 60 * 60)).toFixed(2);
                 const totalHoursVal = totalHours > 0 ? totalHours : '0.00';
@@ -380,8 +380,8 @@ exports.kioskFacePunch = async (req, res) => {
                 return res.status(400).json({ message: 'Already punched out for today.' });
             }
 
-            return res.json({ 
-                success: true, 
+            return res.json({
+                success: true,
                 message: `${action} successful for ${bestMatch.name}`,
                 employee: { name: bestMatch.name, custom_id: bestMatch.custom_id, department: 'N/A' },
                 log: { action, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), status: uiStatus, device: 'Kiosk Face Scanner' }
@@ -439,7 +439,7 @@ exports.kioskLogin = async (req, res) => {
         }
 
         if (!isAuthorized) {
-            return res.status(401).json({ message: 'Invalid Kiosk PIN. Master admin password cannot be used on tablet mode.' });
+            return res.status(401).json({ message: 'Invalid Kiosk PIN .' });
         }
 
         if (!user.company_id) {
@@ -571,9 +571,9 @@ exports.verifyEmployee = async (req, res) => {
 
         let punchStatus = 'needs_checkin';
         const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
-        const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
-            String(attendance[0].out_time).trim() !== '' && 
-            String(attendance[0].out_time).trim() !== '00:00:00' && 
+        const hasOutTime = attendance.length > 0 && attendance[0].out_time &&
+            String(attendance[0].out_time).trim() !== '' &&
+            String(attendance[0].out_time).trim() !== '00:00:00' &&
             String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
 
         if (hasInTime && !hasOutTime) {
@@ -626,7 +626,7 @@ exports.kioskExit = async (req, res) => {
         }
 
         if (!isAuthorized) {
-            return res.status(401).json({ message: 'Incorrect Kiosk PIN. Master admin password cannot be used on tablet mode.' });
+            return res.status(401).json({ message: 'Incorrect Kiosk PIN.' });
         }
 
         if (action === 'verify') {
