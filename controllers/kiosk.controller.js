@@ -381,7 +381,7 @@ exports.kioskLogin = async (req, res) => {
 
         const user = users[0];
 
-        // 2. Verify password: check dedicated Kiosk PIN first, or Admin master password
+        // 2. STRICT SECURITY: Verify password matches ONLY the dedicated Kiosk PIN
         let isAuthorized = false;
 
         if (user.company_id) {
@@ -396,14 +396,7 @@ exports.kioskLogin = async (req, res) => {
         }
 
         if (!isAuthorized) {
-            const isMatch = await bcrypt.compare(password, user.password);
-            if (isMatch) {
-                isAuthorized = true;
-            }
-        }
-
-        if (!isAuthorized) {
-            return res.status(401).json({ message: 'Invalid Kiosk PIN or admin password' });
+            return res.status(401).json({ message: 'Invalid Kiosk PIN. Master admin password cannot be used on tablet mode.' });
         }
 
         if (!user.company_id) {
@@ -562,7 +555,7 @@ exports.kioskExit = async (req, res) => {
             return res.status(400).json({ message: 'Admin password is required to exit Kiosk' });
         }
 
-        // Check dedicated Kiosk PIN first
+        // STRICT SECURITY: Only accept dedicated Kiosk PIN to unlock/exit tablet
         let isAuthorized = false;
 
         const [kSettings] = await db.execute(
@@ -574,23 +567,8 @@ exports.kioskExit = async (req, res) => {
             isAuthorized = true;
         }
 
-        // Fallback: Check admin users' master passwords
         if (!isAuthorized) {
-            const [admins] = await db.execute(
-                'SELECT password FROM users WHERE company_id = ? AND role IN ("admin", "masteradmin", "superadmin")',
-                [company_id]
-            );
-
-            for (const admin of admins) {
-                if (await bcrypt.compare(password, admin.password)) {
-                    isAuthorized = true;
-                    break;
-                }
-            }
-        }
-
-        if (!isAuthorized) {
-            return res.status(401).json({ message: 'Incorrect Kiosk PIN or admin password' });
+            return res.status(401).json({ message: 'Incorrect Kiosk PIN. Master admin password cannot be used on tablet mode.' });
         }
 
         if (action === 'verify') {
