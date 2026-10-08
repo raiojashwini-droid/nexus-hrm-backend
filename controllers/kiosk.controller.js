@@ -26,12 +26,14 @@ exports.getKioskSettings = async (req, res) => {
                 kiosk_name: 'Reception Tablet A',
                 branch: '',
                 status: 'Active',
-                face_recognition: 1
+                face_recognition: 1,
+                kiosk_pin: '1234'
             });
         }
 
         const data = settings[0];
         data.face_recognition = data.face_recognition !== undefined && data.face_recognition !== null ? Number(data.face_recognition) : 1;
+        data.kiosk_pin = data.kiosk_pin || '1234';
         res.json(data);
     } catch (err) {
         console.error('Error fetching kiosk settings:', err);
@@ -42,9 +44,12 @@ exports.getKioskSettings = async (req, res) => {
 exports.updateKioskSettings = async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { kiosk_name, branch, status, face_recognition } = req.body;
+        const { kiosk_name, branch, status, face_recognition, kiosk_pin } = req.body;
 
         const faceVal = (face_recognition === 1 || face_recognition === true || face_recognition === '1' || face_recognition === 'ON') ? 1 : 0;
+        const pinVal = kiosk_pin !== undefined && kiosk_pin !== null && String(kiosk_pin).trim() !== ''
+            ? String(kiosk_pin).trim()
+            : '1234';
 
         const [settings] = await db.execute(
             'SELECT id FROM kiosk_settings WHERE company_id = ?',
@@ -53,17 +58,17 @@ exports.updateKioskSettings = async (req, res) => {
 
         if (settings.length === 0) {
             await db.execute(
-                'INSERT INTO kiosk_settings (company_id, kiosk_name, branch, status, face_recognition) VALUES (?, ?, ?, ?, ?)',
-                [company_id, kiosk_name, branch, status, faceVal]
+                'INSERT INTO kiosk_settings (company_id, kiosk_name, branch, status, face_recognition, kiosk_pin) VALUES (?, ?, ?, ?, ?, ?)',
+                [company_id, kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal]
             );
         } else {
             await db.execute(
-                'UPDATE kiosk_settings SET kiosk_name = ?, branch = ?, status = ?, face_recognition = ? WHERE company_id = ?',
-                [kiosk_name, branch, status, faceVal, company_id]
+                'UPDATE kiosk_settings SET kiosk_name = ?, branch = ?, status = ?, face_recognition = ?, kiosk_pin = ? WHERE company_id = ?',
+                [kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal, company_id]
             );
         }
 
-        res.json({ message: 'Kiosk settings updated successfully' });
+        res.json({ message: 'Kiosk settings updated successfully', kiosk_pin: pinVal });
     } catch (err) {
         console.error('Error updating kiosk settings:', err);
         res.status(500).json({ message: 'Server error updating kiosk settings', error: err.message });
@@ -298,10 +303,29 @@ exports.kioskLogin = async (req, res) => {
 
         const user = users[0];
 
-        // 2. Verify password
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Invalid company credentials' });
+        // 2. Verify password: check dedicated Kiosk PIN first, or Admin master password
+        let isAuthorized = false;
+
+        if (user.company_id) {
+            const [kSettings] = await db.execute(
+                'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
+                [user.company_id]
+            );
+            const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+            if (String(password).trim() === activePin) {
+                isAuthorized = true;
+            }
+        }
+
+        if (!isAuthorized) {
+            const isMatch = await bcrypt.compare(password, user.password);
+            if (isMatch) {
+                isAuthorized = true;
+            }
+        }
+
+        if (!isAuthorized) {
+            return res.status(401).json({ message: 'Invalid Kiosk PIN or admin password' });
         }
 
         if (!user.company_id) {
@@ -446,26 +470,35 @@ exports.kioskExit = async (req, res) => {
             return res.status(400).json({ message: 'Admin password is required to exit Kiosk' });
         }
 
-        // Find admin users for this company
-        const [admins] = await db.execute(
-            'SELECT password FROM users WHERE company_id = ? AND role IN ("admin", "masteradmin", "superadmin")',
+        // Check dedicated Kiosk PIN first
+        let isAuthorized = false;
+
+        const [kSettings] = await db.execute(
+            'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
             [company_id]
         );
-
-        if (admins.length === 0) {
-            return res.status(404).json({ message: 'Admin account not found for this company' });
+        const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+        if (String(password).trim() === activePin) {
+            isAuthorized = true;
         }
 
-        let isMatch = false;
-        for (const admin of admins) {
-            if (await bcrypt.compare(password, admin.password)) {
-                isMatch = true;
-                break;
+        // Fallback: Check admin users' master passwords
+        if (!isAuthorized) {
+            const [admins] = await db.execute(
+                'SELECT password FROM users WHERE company_id = ? AND role IN ("admin", "masteradmin", "superadmin")',
+                [company_id]
+            );
+
+            for (const admin of admins) {
+                if (await bcrypt.compare(password, admin.password)) {
+                    isAuthorized = true;
+                    break;
+                }
             }
         }
 
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Incorrect admin password' });
+        if (!isAuthorized) {
+            return res.status(401).json({ message: 'Incorrect Kiosk PIN or admin password' });
         }
 
         if (action === 'verify') {
