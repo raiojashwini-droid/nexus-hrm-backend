@@ -538,7 +538,7 @@ exports.verifyEmployee = async (req, res) => {
         }
 
         // Query employee belonging to this company
-        let query = 'SELECT id, custom_id, machine_id, name, department, designation, photo, status, company_id FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
+        let query = 'SELECT id, custom_id, machine_id, name, department, role, photo, status, company_id FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
         let params = [String(employeeId).trim(), String(employeeId).trim(), String(employeeId).trim()];
 
         if (company_id && req.user.role !== 'MasterAdmin') {
@@ -589,7 +589,7 @@ exports.verifyEmployee = async (req, res) => {
                 custom_id: emp.custom_id,
                 name: emp.name,
                 department: emp.department || 'General',
-                designation: emp.designation || 'Staff',
+                designation: emp.role || 'Staff',
                 photo: emp.photo,
                 company_id: emp.company_id
             },
