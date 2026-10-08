@@ -48,8 +48,20 @@ exports.getKioskSettings = async (req, res) => {
         }
 
         const data = settings[0];
+        const activePin = data.kiosk_pin || '1234';
+
+        // Security Validation: If request is from a Kiosk tablet (role: 'kiosk'), ensure PIN has not changed
+        if (req.user?.role === 'kiosk') {
+            if (!req.user.pin || String(req.user.pin).trim() !== String(activePin).trim()) {
+                return res.status(401).json({
+                    message: 'Kiosk PIN has been changed by admin. Please enter the new PIN to connect.',
+                    pinChanged: true
+                });
+            }
+        }
+
         data.face_recognition = data.face_recognition !== undefined && data.face_recognition !== null ? Number(data.face_recognition) : 1;
-        data.kiosk_pin = data.kiosk_pin || '1234';
+        data.kiosk_pin = activePin;
         res.json(data);
     } catch (err) {
         console.error('Error fetching kiosk settings:', err);
@@ -142,6 +154,21 @@ exports.kioskPunch = async (req, res) => {
         }
 
         const employee = employees[0];
+
+        // Validate kiosk PIN hasn't changed if caller is a kiosk tablet
+        if (req.user?.role === 'kiosk') {
+            const [kSettings] = await db.execute(
+                'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
+                [employee.company_id]
+            );
+            const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+            if (!req.user.pin || String(req.user.pin).trim() !== activePin) {
+                return res.status(401).json({
+                    message: 'Kiosk PIN has been changed by admin. Please enter the new PIN to connect.',
+                    pinChanged: true
+                });
+            }
+        }
         const tz = await getCompanyTimezone(employee.company_id);
         const date = moment().tz(tz).format('YYYY-MM-DD');
         const nowFormatted = moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
@@ -229,6 +256,21 @@ exports.kioskFacePunch = async (req, res) => {
     try {
         const { company_id } = req.user;
         const { descriptor, livenessPassed, livenessScore } = req.body;
+
+        // Validate kiosk PIN hasn't changed if caller is a kiosk tablet
+        if (req.user?.role === 'kiosk') {
+            const [kSettings] = await db.execute(
+                'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
+                [company_id]
+            );
+            const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+            if (!req.user.pin || String(req.user.pin).trim() !== activePin) {
+                return res.status(401).json({
+                    message: 'Kiosk PIN has been changed by admin. Please enter the new PIN to connect.',
+                    pinChanged: true
+                });
+            }
+        }
 
         // Check if Face Recognition is enabled for this company
         const [kioskConf] = await db.execute(
@@ -383,13 +425,14 @@ exports.kioskLogin = async (req, res) => {
 
         // 2. STRICT SECURITY: Verify password matches ONLY the dedicated Kiosk PIN
         let isAuthorized = false;
+        let activePin = '1234';
 
         if (user.company_id) {
             const [kSettings] = await db.execute(
                 'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
                 [user.company_id]
             );
-            const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+            activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
             if (String(password).trim() === activePin) {
                 isAuthorized = true;
             }
@@ -418,14 +461,15 @@ exports.kioskLogin = async (req, res) => {
             return res.status(403).json({ message: 'Company account is inactive or suspended' });
         }
 
-        // 4. Issue dedicated long-lived Kiosk JWT (role: 'kiosk', 365d)
+        // 4. Issue dedicated long-lived Kiosk JWT (role: 'kiosk', 365d) with activePin embedded
         const token = jwt.sign(
             {
                 id: `kiosk-${company.id}`,
                 role: 'kiosk',
                 company_id: company.id,
                 company_name: company.company_name,
-                device_name: deviceName || 'Reception Tablet'
+                device_name: deviceName || 'Reception Tablet',
+                pin: String(activePin).trim()
             },
             process.env.JWT_SECRET || 'biotrack_secret_key_2026_pro',
             { expiresIn: '365d' }
@@ -476,6 +520,21 @@ exports.verifyEmployee = async (req, res) => {
 
         if (!employeeId) {
             return res.status(400).json({ message: 'Employee ID is required' });
+        }
+
+        // Validate kiosk PIN hasn't changed
+        if (req.user?.role === 'kiosk') {
+            const [kSettings] = await db.execute(
+                'SELECT kiosk_pin FROM kiosk_settings WHERE company_id = ?',
+                [company_id]
+            );
+            const activePin = kSettings.length > 0 && kSettings[0].kiosk_pin ? String(kSettings[0].kiosk_pin).trim() : '1234';
+            if (!req.user.pin || String(req.user.pin).trim() !== activePin) {
+                return res.status(401).json({
+                    message: 'Kiosk PIN has been changed by admin. Please enter the new PIN to connect.',
+                    pinChanged: true
+                });
+            }
         }
 
         // Query employee belonging to this company
