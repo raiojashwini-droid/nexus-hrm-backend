@@ -198,15 +198,7 @@ router.put('/kiosk/settings', auth, kioskController.updateKioskSettings);
 
 // Kiosk Punch — secured with API key or user JWT token (supports kiosk role)
 router.post('/kiosk/punch', (req, res, next) => {
-    const apiKey = req.headers['x-kiosk-api-key'] || req.body.apiKey;
-    const validKey = process.env.KIOSK_API_KEY || 'kiosk_nexus_2026_secure_key';
-    
-    // Accept valid kiosk API key
-    if (apiKey && apiKey === validKey) {
-        return next();
-    }
-
-    // Also accept logged-in user JWT authentication header if provided
+    // 1. If Bearer token provided, decode and populate req.user (supports kiosk and user roles)
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const jwt = require('jsonwebtoken');
@@ -214,11 +206,20 @@ router.post('/kiosk/punch', (req, res, next) => {
             const token = authHeader.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET || 'biotrack_secret_key_2026_pro');
             req.user = decoded;
-            return next();
-        } catch (jwtErr) {}
+        } catch (jwtErr) {
+            console.warn('Invalid JWT in /kiosk/punch:', jwtErr.message);
+        }
     }
 
-    return res.status(401).json({ message: 'Unauthorized: Invalid or missing kiosk API key' });
+    const apiKey = req.headers['x-kiosk-api-key'] || req.body.apiKey;
+    const validKey = process.env.KIOSK_API_KEY || 'kiosk_nexus_2026_secure_key';
+    
+    // Accept valid kiosk API key OR authenticated user
+    if ((apiKey && apiKey === validKey) || req.user) {
+        return next();
+    }
+
+    return res.status(401).json({ message: 'Unauthorized: Invalid or missing kiosk credentials' });
 }, kioskController.kioskPunch);
 router.post('/kiosk/face-punch', auth, kioskController.kioskFacePunch);
 

@@ -77,19 +77,23 @@ exports.updateKioskSettings = async (req, res) => {
 
 exports.kioskPunch = async (req, res) => {
     try {
-        const { employeeId, type } = req.body;
+        const { employeeId, type, customId } = req.body;
+        const company_id = req.user?.company_id || req.body.companyId;
 
         if (!employeeId || !type) {
              return res.status(400).json({ message: 'Employee ID and punch type are required' });
         }
 
-        // Validate employee exists
-        let empSql = 'SELECT * FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
-        let empParams = [employeeId, employeeId, employeeId];
-        if (req.user?.company_id && req.user.role !== 'MasterAdmin') {
+        // Validate employee exists (prioritizing exact primary key id if provided, else custom_id/machine_id)
+        let empSql = 'SELECT * FROM employees WHERE (id = ? OR custom_id = ? OR machine_id = ?)';
+        let empParams = [employeeId, customId || employeeId, customId || employeeId];
+        if (company_id && req.user?.role !== 'MasterAdmin') {
             empSql += ' AND company_id = ?';
-            empParams.push(req.user.company_id);
+            empParams.push(company_id);
         }
+        empSql += ' ORDER BY (id = ?) DESC, (custom_id = ?) DESC LIMIT 1';
+        empParams.push(employeeId, customId || employeeId);
+
         const [employees] = await db.execute(empSql, empParams);
 
         if (employees.length === 0) {
@@ -97,54 +101,62 @@ exports.kioskPunch = async (req, res) => {
         }
 
         const employee = employees[0];
-        const date = new Date().toISOString().split('T')[0];
-        const now = new Date();
+        const tz = await getCompanyTimezone(employee.company_id);
+        const date = moment().tz(tz).format('YYYY-MM-DD');
+        const nowFormatted = moment().tz(tz).format('YYYY-MM-DD HH:mm:ss');
 
-        // Find existing attendance record for today
+        // Find existing attendance record for today (checking date OR DATE(in_time) in company timezone)
         const [attendance] = await db.execute(
-            'SELECT * FROM attendance WHERE employee_id = ? AND date = ?',
-            [employee.id, date]
+            'SELECT * FROM attendance WHERE employee_id = ? AND (date = ? OR DATE(in_time) = ?) ORDER BY id DESC LIMIT 1',
+            [employee.id, date, date]
         );
 
         let uiStatus = 'On Time';
+        const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
+        const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
+            String(attendance[0].out_time).trim() !== '' && 
+            String(attendance[0].out_time).trim() !== '00:00:00' && 
+            String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
 
         if (type === 'Punch In') {
-            if (attendance.length > 0 && attendance[0].in_time) {
+            if (hasInTime) {
                 return res.status(400).json({ message: 'Already punched in today' });
             }
 
+            const status = await determinePunchStatus(employee.company_id, nowFormatted);
+            uiStatus = status === 'late' ? 'Late' : 'On Time';
+
             if (attendance.length === 0) {
-                const status = await determinePunchStatus(employee.company_id, now.toISOString());
-                uiStatus = status === 'late' ? 'Late' : 'On Time';
                 await db.execute(
                     'INSERT INTO attendance (company_id, employee_id, date, in_time, status) VALUES (?, ?, ?, ?, ?)',
-                    [employee.company_id, employee.id, date, now, status]
+                    [employee.company_id, employee.id, date, nowFormatted, status]
                 );
             } else {
-                 const status = await determinePunchStatus(employee.company_id, now.toISOString());
-                 uiStatus = status === 'late' ? 'Late' : 'On Time';
-                 await db.execute(
+                await db.execute(
                     'UPDATE attendance SET in_time = ?, status = ? WHERE id = ?',
-                    [now, status, attendance[0].id]
+                    [nowFormatted, status, attendance[0].id]
                 );
             }
         } else if (type === 'Punch Out') {
-            if (attendance.length === 0 || !attendance[0].in_time) {
+            if (!hasInTime) {
                  return res.status(400).json({ message: 'Cannot punch out without punching in first' });
             }
             
-            if (attendance[0].out_time) {
+            if (hasOutTime) {
                  return res.status(400).json({ message: 'Already punched out today' });
             }
 
-            const inTime = new Date(attendance[0].in_time);
-            const diffHours = (now - inTime) / (1000 * 60 * 60);
+            const inTimeMoment = moment.tz(attendance[0].in_time, 'YYYY-MM-DD HH:mm:ss', tz);
+            const outTimeMoment = moment.tz(nowFormatted, 'YYYY-MM-DD HH:mm:ss', tz);
+            const diffMs = outTimeMoment.diff(inTimeMoment);
+            const diffHours = (diffMs / (1000 * 60 * 60)).toFixed(2);
+            const totalHoursVal = diffHours > 0 ? diffHours : '0.00';
 
             await db.execute(
                 'UPDATE attendance SET out_time = ?, total_hours = ? WHERE id = ?',
-                [now, diffHours.toFixed(2), attendance[0].id]
+                [nowFormatted, totalHoursVal, attendance[0].id]
             );
-            uiStatus = `${diffHours.toFixed(1)} hrs worked`;
+            uiStatus = `${Number(totalHoursVal).toFixed(1)} hrs worked`;
         } else {
             return res.status(400).json({ message: 'Invalid punch type' });
         }
@@ -152,8 +164,18 @@ exports.kioskPunch = async (req, res) => {
         res.json({ 
             success: true,
             message: `${type} successful for ${employee.name}`,
-            employee: { name: employee.name, custom_id: employee.custom_id, department: employee.department || 'N/A' },
-            log: { action: type, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), status: uiStatus, device: 'Kiosk Mode' }
+            employee: { 
+                id: employee.id,
+                name: employee.name, 
+                custom_id: employee.custom_id, 
+                department: employee.department || 'N/A' 
+            },
+            log: { 
+                action: type, 
+                time: moment().tz(tz).format('hh:mm A'), 
+                status: uiStatus, 
+                device: 'Kiosk Mode' 
+            }
         });
 
     } catch (err) {
@@ -224,25 +246,37 @@ exports.kioskFacePunch = async (req, res) => {
 
             await db.execute('INSERT INTO face_logs (employee_id, status, confidence) VALUES (?, ?, ?)', [employeeId, 'success', minDistance]);
 
-            // Find existing attendance record for today
+            // Find existing attendance record for today (checking date OR DATE(in_time) in company timezone)
             const [attendance] = await db.execute(
-                'SELECT * FROM attendance WHERE employee_id = ? AND date = ?',
-                [employeeId, todayFormatted]
+                'SELECT * FROM attendance WHERE employee_id = ? AND (date = ? OR DATE(in_time) = ?) ORDER BY id DESC LIMIT 1',
+                [employeeId, todayFormatted, todayFormatted]
             );
 
             let action = 'Punch In';
-
             let uiStatus = 'On Time';
 
-            if (attendance.length === 0) {
+            const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
+            const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
+                String(attendance[0].out_time).trim() !== '' && 
+                String(attendance[0].out_time).trim() !== '00:00:00' && 
+                String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
+
+            if (!hasInTime) {
                 // Punch In
                 const status = await determinePunchStatus(bestMatch.company_id, nowFormatted);
                 uiStatus = status === 'late' ? 'Late' : 'On Time';
-                await db.execute(
-                    'INSERT INTO attendance (company_id, employee_id, date, in_time, status) VALUES (?, ?, ?, ?, ?)',
-                    [bestMatch.company_id, employeeId, todayFormatted, nowFormatted, status]
-                );
-            } else if (!attendance[0].out_time) {
+                if (attendance.length === 0) {
+                    await db.execute(
+                        'INSERT INTO attendance (company_id, employee_id, date, in_time, status) VALUES (?, ?, ?, ?, ?)',
+                        [bestMatch.company_id, employeeId, todayFormatted, nowFormatted, status]
+                    );
+                } else {
+                    await db.execute(
+                        'UPDATE attendance SET in_time = ?, status = ? WHERE id = ?',
+                        [nowFormatted, status, attendance[0].id]
+                    );
+                }
+            } else if (!hasOutTime) {
                 // Punch Out
                 action = 'Punch Out';
                 
@@ -252,11 +286,13 @@ exports.kioskFacePunch = async (req, res) => {
                 
                 const diffMs = outTime.diff(inTime);
                 const totalHours = (diffMs / (1000 * 60 * 60)).toFixed(2);
+                const totalHoursVal = totalHours > 0 ? totalHours : '0.00';
 
                 await db.execute(
                     'UPDATE attendance SET out_time = ?, total_hours = ? WHERE id = ?',
-                    [nowFormatted, totalHours, attendance[0].id]
+                    [nowFormatted, totalHoursVal, attendance[0].id]
                 );
+                uiStatus = `${Number(totalHoursVal).toFixed(1)} hrs worked`;
             } else {
                 return res.status(400).json({ message: 'Already punched out for today.' });
             }
@@ -408,13 +444,16 @@ exports.verifyEmployee = async (req, res) => {
         }
 
         // Query employee belonging to this company
-        let query = 'SELECT id, custom_id, machine_id, name, department, photo, status FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
-        let params = [employeeId.trim(), employeeId.trim(), employeeId.trim()];
+        let query = 'SELECT id, custom_id, machine_id, name, department, designation, photo, status, company_id FROM employees WHERE (custom_id = ? OR machine_id = ? OR id = ?)';
+        let params = [String(employeeId).trim(), String(employeeId).trim(), String(employeeId).trim()];
 
         if (company_id && req.user.role !== 'MasterAdmin') {
             query += ' AND company_id = ?';
             params.push(company_id);
         }
+
+        query += ' ORDER BY (custom_id = ?) DESC, (machine_id = ?) DESC, id ASC LIMIT 1';
+        params.push(String(employeeId).trim(), String(employeeId).trim());
 
         const [employees] = await db.execute(query, params);
 
@@ -423,21 +462,29 @@ exports.verifyEmployee = async (req, res) => {
         }
 
         const emp = employees[0];
-        if (emp.status !== 'active') {
+        if (emp.status && emp.status.toLowerCase() !== 'active') {
             return res.status(400).json({ message: 'Employee profile is currently inactive' });
         }
 
-        // Check today's attendance status
-        const todayDate = new Date().toISOString().split('T')[0];
+        // Check today's attendance status using company timezone
+        const tz = await getCompanyTimezone(emp.company_id);
+        const todayDate = moment().tz(tz).format('YYYY-MM-DD');
+
         const [attendance] = await db.execute(
-            'SELECT id, in_time, out_time FROM attendance WHERE employee_id = ? AND date = ?',
-            [emp.id, todayDate]
+            'SELECT id, in_time, out_time FROM attendance WHERE employee_id = ? AND (date = ? OR DATE(in_time) = ?) ORDER BY id DESC LIMIT 1',
+            [emp.id, todayDate, todayDate]
         );
 
         let punchStatus = 'needs_checkin';
-        if (attendance.length > 0 && attendance[0].in_time && !attendance[0].out_time) {
+        const hasInTime = attendance.length > 0 && attendance[0].in_time && String(attendance[0].in_time).trim() !== '';
+        const hasOutTime = attendance.length > 0 && attendance[0].out_time && 
+            String(attendance[0].out_time).trim() !== '' && 
+            String(attendance[0].out_time).trim() !== '00:00:00' && 
+            String(attendance[0].out_time).trim() !== '0000-00-00 00:00:00';
+
+        if (hasInTime && !hasOutTime) {
             punchStatus = 'needs_checkout';
-        } else if (attendance.length > 0 && attendance[0].in_time && attendance[0].out_time) {
+        } else if (hasInTime && hasOutTime) {
             punchStatus = 'done';
         }
 
@@ -448,7 +495,9 @@ exports.verifyEmployee = async (req, res) => {
                 custom_id: emp.custom_id,
                 name: emp.name,
                 department: emp.department || 'General',
-                photo: emp.photo
+                designation: emp.designation || 'Staff',
+                photo: emp.photo,
+                company_id: emp.company_id
             },
             punchStatus
         });
