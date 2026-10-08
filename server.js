@@ -606,6 +606,7 @@ const initDB = async () => {
                 branch VARCHAR(150) DEFAULT '',
                 status ENUM('Active','Inactive') DEFAULT 'Active',
                 face_recognition TINYINT(1) DEFAULT 1,
+                kiosk_pin VARCHAR(255) DEFAULT '1234',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
             )
@@ -619,6 +620,16 @@ const initDB = async () => {
             }
         } catch (colErr) {
             console.error('Error adding face_recognition column to kiosk_settings:', colErr);
+        }
+
+        try {
+            const [pinCols] = await db.execute("SHOW COLUMNS FROM kiosk_settings LIKE 'kiosk_pin'");
+            if (pinCols.length === 0) {
+                await db.execute("ALTER TABLE kiosk_settings ADD COLUMN kiosk_pin VARCHAR(255) DEFAULT '1234'");
+                console.log('✅ Added kiosk_pin column to kiosk_settings table');
+            }
+        } catch (pinErr) {
+            console.error('Error adding kiosk_pin column to kiosk_settings:', pinErr);
         }
 
         await db.execute(`

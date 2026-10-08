@@ -13,8 +13,24 @@ const euclideanDistance = (desc1, desc2) => {
 
 const FACE_MATCH_THRESHOLD = 0.45;
 
+let isKioskPinColumnChecked = false;
+const ensureKioskPinColumn = async () => {
+    if (isKioskPinColumnChecked) return;
+    try {
+        const [cols] = await db.execute("SHOW COLUMNS FROM kiosk_settings LIKE 'kiosk_pin'");
+        if (cols.length === 0) {
+            await db.execute("ALTER TABLE kiosk_settings ADD COLUMN kiosk_pin VARCHAR(255) DEFAULT '1234'");
+            console.log("✅ Auto-migrated: Added 'kiosk_pin' column to kiosk_settings table");
+        }
+        isKioskPinColumnChecked = true;
+    } catch (e) {
+        console.warn("Could not check/add kiosk_pin column:", e.message);
+    }
+};
+
 exports.getKioskSettings = async (req, res) => {
     try {
+        await ensureKioskPinColumn();
         const { company_id } = req.user;
         const [settings] = await db.execute(
             'SELECT * FROM kiosk_settings WHERE company_id = ?',
@@ -43,6 +59,7 @@ exports.getKioskSettings = async (req, res) => {
 
 exports.updateKioskSettings = async (req, res) => {
     try {
+        await ensureKioskPinColumn();
         const { company_id } = req.user;
         const { kiosk_name, branch, status, face_recognition, kiosk_pin } = req.body;
 
@@ -57,15 +74,39 @@ exports.updateKioskSettings = async (req, res) => {
         );
 
         if (settings.length === 0) {
-            await db.execute(
-                'INSERT INTO kiosk_settings (company_id, kiosk_name, branch, status, face_recognition, kiosk_pin) VALUES (?, ?, ?, ?, ?, ?)',
-                [company_id, kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal]
-            );
+            try {
+                await db.execute(
+                    'INSERT INTO kiosk_settings (company_id, kiosk_name, branch, status, face_recognition, kiosk_pin) VALUES (?, ?, ?, ?, ?, ?)',
+                    [company_id, kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal]
+                );
+            } catch (insErr) {
+                if (insErr.code === 'ER_BAD_FIELD_ERROR' || (insErr.message && insErr.message.includes('kiosk_pin'))) {
+                    await db.execute("ALTER TABLE kiosk_settings ADD COLUMN kiosk_pin VARCHAR(255) DEFAULT '1234'");
+                    await db.execute(
+                        'INSERT INTO kiosk_settings (company_id, kiosk_name, branch, status, face_recognition, kiosk_pin) VALUES (?, ?, ?, ?, ?, ?)',
+                        [company_id, kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal]
+                    );
+                } else {
+                    throw insErr;
+                }
+            }
         } else {
-            await db.execute(
-                'UPDATE kiosk_settings SET kiosk_name = ?, branch = ?, status = ?, face_recognition = ?, kiosk_pin = ? WHERE company_id = ?',
-                [kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal, company_id]
-            );
+            try {
+                await db.execute(
+                    'UPDATE kiosk_settings SET kiosk_name = ?, branch = ?, status = ?, face_recognition = ?, kiosk_pin = ? WHERE company_id = ?',
+                    [kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal, company_id]
+                );
+            } catch (updErr) {
+                if (updErr.code === 'ER_BAD_FIELD_ERROR' || (updErr.message && updErr.message.includes('kiosk_pin'))) {
+                    await db.execute("ALTER TABLE kiosk_settings ADD COLUMN kiosk_pin VARCHAR(255) DEFAULT '1234'");
+                    await db.execute(
+                        'UPDATE kiosk_settings SET kiosk_name = ?, branch = ?, status = ?, face_recognition = ?, kiosk_pin = ? WHERE company_id = ?',
+                        [kiosk_name || 'Reception Tablet A', branch || '', status || 'Active', faceVal, pinVal, company_id]
+                    );
+                } else {
+                    throw updErr;
+                }
+            }
         }
 
         res.json({ message: 'Kiosk settings updated successfully', kiosk_pin: pinVal });
@@ -321,6 +362,7 @@ exports.kioskFacePunch = async (req, res) => {
  */
 exports.kioskLogin = async (req, res) => {
     try {
+        await ensureKioskPinColumn();
         const { email, password, deviceName } = req.body;
 
         if (!email || !password) {
@@ -512,6 +554,7 @@ exports.verifyEmployee = async (req, res) => {
  */
 exports.kioskExit = async (req, res) => {
     try {
+        await ensureKioskPinColumn();
         const { password, action } = req.body;
         const company_id = req.user?.company_id;
 
