@@ -588,8 +588,7 @@ exports.verifyEmployee = async (req, res) => {
                 id: emp.id,
                 custom_id: emp.custom_id,
                 name: emp.name,
-                department: emp.department || 'General',
-                designation: emp.role || 'Staff',
+                department: (emp.department && emp.department.toLowerCase() !== 'general') ? emp.department : '',
                 photo: emp.photo,
                 company_id: emp.company_id
             },
